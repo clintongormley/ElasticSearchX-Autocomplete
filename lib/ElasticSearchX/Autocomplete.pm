@@ -1,17 +1,20 @@
 package ElasticSearchX::Autocomplete;
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 use Carp;
 
 use ElasticSearch 0.28;
 use Text::Unidecode;
+use Unicode::Normalize;
 use JSON::XS;
 
 our $JSON    = JSON::XS->new()->utf8(1);
 our $VERSION = '0.01';
 
 =encoding utf-8
+
+=cut
 
 =head1 NAME
 
@@ -53,8 +56,8 @@ Index phrases:
         parser  => sub {
             my $auto     = shift;
             my $doc      = shift;
-            my @words    = $auto->tokenize($doc->{_source}{fullname});
-            return { words => \@words };
+            my @tokens    = $auto->tokenize($doc->{_source}{fullname});
+            return { tokens => \@tokens };
         }
     );
 
@@ -69,10 +72,10 @@ Index phrases with contexts:
         parser  => sub {
             my $auto     = shift;
             my $doc      = shift;
-            my @words    = $auto->tokenize($doc->{_source}{fullname});
+            my @tokens    = $auto->tokenize($doc->{_source}{fullname});
             my @contexts => @{$doc->{_source}{address_books}};
             return {
-                words       => \@words,
+                tokens       => \@tokens,
                 contexts    => \@contexts
             };
         }
@@ -146,7 +149,7 @@ The matching terms are ranked by the frequency/count/number of emails:
 
 =item *
 
-But if one or more words match completely, then they appear higher in the list:
+But if one or more tokens match completely, then they appear higher in the list:
 
     # "jon"
             jon bloggs              # full name match 'jon'
@@ -261,8 +264,8 @@ Index your phrases, for example:
         parser => sub {
             my $auto  = shift;
             my $doc   = shift;
-            my @words = split / /, $doc->{_source}{name};
-            return { words => \@words };
+            my @tokens = split / /, $doc->{_source}{name};
+            return { tokens => \@tokens };
         },
     );
 
@@ -277,10 +280,10 @@ Or, with contexts:
         parser => sub {
             my $auto     = shift;
             my $doc      = shift;
-            my @words    = split / /, $doc->{_source}{name}};
+            my @tokens    = split / /, $doc->{_source}{name}};
             my @contexts = @{$doc->{_source}{tags}};
             return {
-                words    => \@words,
+                tokens    => \@tokens,
                 contexts => \@contexts
             };
         },
@@ -342,13 +345,29 @@ details of the each parameter.
 
 =cut
 
+=pod
+
+$strLength = mb_strlen($suggestString, UTF8);
+$strPos = mb_strpos(mb_strtolower($whatYouSuggest), $whatYouType, 0, UTF8);
+$label = mb_substr($whatYouSuggest, 0, $strPos, UTF8).
+'<em>'.mb_substr($whatYouSuggest, $strPos, $strLength, UTF8).'</em>'.
+mb_substr($whatYouSuggest, $strPos + $strLength, mb_strlen($whatYouSuggest, UTF8), UTF8);
+
+=cut
+
+our $as_json;
+
 #===================================
 sub new {
 #===================================
     my $proto  = shift;
     my $class  = ref $proto || $proto;
     my $params = ref $_[0] eq 'HASH' ? shift() : {@_};
-    my $self   = { _ascii_folding => 1, _tokenizer => \&_tokenize };
+    my $self   = {
+        _ascii_folding => 1,
+        _tokenizer     => \&_tokenize,
+        _debug         => 0
+    };
 
     bless $self, $class;
     $self->$_( $params->{$_} ) for keys %$params;
@@ -378,54 +397,118 @@ sub suggest {
 #===================================
     my $self   = shift;
     my $phrase = shift;
-    return unless defined $phrase;
+    $phrase = '' unless defined $phrase;
 
     my $context = shift;
     $context = '' unless defined $context;
 
     my $tokenizer = $self->tokenizer;
-    my @words     = $tokenizer->($phrase);
-    return unless @words;
+    my @tokens    = $self->tokenize($phrase);
 
-    my $results = $self->_retrieve_suggestions( $context, @words );
+    if ( $phrase =~ /\w$/ ) {
+        my $last = pop @tokens;
+        @tokens = ( $self->filter_tokens(@tokens), $last );
+    }
+    else {
+        @tokens = $self->filter_tokens(@tokens);
+    }
 
-    my @phrases;
+    $self->_debug( 1, 'Suggest: ', \@tokens, " @ '$context'" );
+
+    my ( $cache_key, $json );
+    my $cache = $self->cache;
+
+    if ($cache) {
+        $cache_key = $self->_cache_key( $context, \@tokens );
+        $self->_debug( 1, "Retrieve from cache: ", $cache_key );
+
+        if ( $json = $cache->($cache_key) ) {
+            $self->_debug( 1, " - Found in cache" );
+            return $as_json ? $json : $JSON->decode($json);
+        }
+
+        $self->_debug( 1, " - Not found in cache" );
+        $as_json++;
+    }
+
+    my $results
+        = @tokens
+        ? $self->_retrieve_suggestions( $context, @tokens )
+        : $self->_retrieve_popular($context);
+
+    my $suggestions = $self->_build_phrases( \@tokens, $results );
+    $self->_debug( 2, "Suggestions: ", $suggestions );
+
+    $json = $JSON->encode($suggestions)
+        if $as_json;
+
+    if ($cache) {
+        $self->_debug( 1, " - Saving to cache" );
+        $cache->( $cache_key, $json );
+    }
+
+    return $as_json ? $json : $suggestions;
+}
+
+=head2 suggest_json()
+
+=cut
+
+#===================================
+sub suggest_json {
+#===================================
+    local $as_json = 1;
+    return shift()->suggest(@_);
+}
+
+#===================================
+sub _build_phrases {
+#===================================
+    my $self    = shift;
+    my $tokens  = shift;
+    my $results = shift;
+
     my $use_ascii = $self->ascii_folding;
+    my @phrases;
 
     my %ascii
         = $use_ascii
-        ? map { $_ => unidecode($_) } @words
-        : map { $_ => $_ } @words;
+        ? map { $_ => unidecode($_) } @$tokens
+        : map { $_ => $_ } @$tokens;
 
     for my $hit (@$results) {
-        my @new_words;
-        my @candidates = @{ $hit->{fields}{words} };
+        my $label = $hit->{fields}{label};
+        if ( defined $label ) {
+            push @phrases, $label;
+            next;
+        }
+        my @new_tokens;
+        my $temp = $hit->{fields}{tokens};
+        my @candidates = ref $temp ? @$temp : $temp;
         my %unused
             = $use_ascii
             ? map { $_ => unidecode($_) } @candidates
             : map { $_ => $_ } @candidates;
 
-    ORIGINAL: for my $original (@words) {
+    ORIGINAL: for my $original (@$tokens) {
             my $ascii = $ascii{$original};
             for my $candidate ( keys %unused ) {
                 if ( $unused{$candidate} =~ /^${ascii}/i ) {
                     delete $unused{$candidate};
-                    push @new_words, $candidate;
+                    push @new_tokens, $candidate;
                     next ORIGINAL;
                 }
             }
-            push @new_words, $original;
         }
 
-        for my $candidate (@candidates) {
-            push @new_words, $candidate
+        for my $candidate ( sort @candidates ) {
+            push @new_tokens, $candidate
                 if $unused{$candidate};
         }
 
-        push @phrases, join ' ', @new_words;
+        push @phrases, join ' ', @new_tokens;
     }
-
-    return wantarray ? @phrases : \@phrases;
+    return \@phrases;
 }
 
 #===================================
@@ -433,21 +516,21 @@ sub _retrieve_suggestions {
 #===================================
     my $self    = shift;
     my $context = shift;
-    my @words   = @_;
+    my @tokens  = @_;
 
-    my $word_query = {
+    my $token_query = {
         bool => {
             must => [ {
                     field => {
-                        'words.ngram' => join ' ',
-                        map {"+$_"} @words
+                        'tokens.ngram' => join ' ',
+                        map {"+$_"} @tokens
                     }
                 }
             ],
             should => [ {
                     field => {
-                        'words' => {
-                            query => join( ' ', @words ),
+                        'tokens' => {
+                            query => join( ' ', @tokens ),
                             boost => $self->match_boost,
                         }
                     }
@@ -466,14 +549,36 @@ sub _retrieve_suggestions {
                 query => {
                     filtered => {
                         filter => { term => { context => $context } },
-                        query  => $word_query,
+                        query  => $token_query,
                     }
                 },
                 script => "_score * doc['freq'].value",
             }
         },
         size   => $self->max_results,
-        fields => [ 'words', 'freq' ],
+        fields => [ 'tokens', 'freq', 'label' ],
+    );
+    return $results->{hits}{hits};
+}
+
+#===================================
+sub _retrieve_popular {
+#===================================
+    my $self    = shift;
+    my $context = shift;
+
+    my $results = $self->es->search(
+        index => $self->index,
+        type  => $self->type,
+
+        # preference => '_local',
+        query => {
+            constant_score =>
+                { filter => { term => { context => $context } }, }
+        },
+        size   => $self->max_results,
+        fields => [ 'tokens', 'freq', 'label' ],
+        sort => { freq => 'desc' },
     );
 
     return $results->{hits}{hits};
@@ -556,12 +661,10 @@ sub context_count {
 
     $auto->index_phrases(
         phrases     => [],
-        verbose     => 0 | 1
     );
 
     $auto->index_phrases(
         filename    => 'file.json',
-        verbose     => 0 | 1
     );
 
     $auto->index_phrases(
@@ -569,14 +672,11 @@ sub context_count {
         parser      => sub { parser },
 
         min_freq    => 1,
-        max_words   => 10,
-        verbose     => 0 | 1,
+        max_tokens   => 10,
     )
 
 C<index_phrases()> indexes all the phrases into the ElasticSearch autocomplete
 index.
-
-C<< verbose => 1 >> will cause some progress information to be printed out.
 
 Phrases can either be passed in as the C<phrases> param, loaded from the JSON
 file C<filename> or retrieved from an ElasticSearch index using
@@ -587,7 +687,7 @@ this structure:
 
     [
         {
-            words         => ['word','word'...],
+            tokens         => ['token','token'...],
             contexts      => {
                 context_1 => $freq_1,
                 context_2 => $freq_2
@@ -600,13 +700,13 @@ If there are no contexts, then the structure should be:
 
     [
         {
-            words         => ['word','word'...],
+            tokens         => ['token','token'...],
             contexts      => { '' => $freq }
         },
         ...
     ]
 
-NOTE: Reindexing the same words will cause those words to be added, not
+NOTE: Reindexing the same tokens will cause those tokens to be added, not
 overwritten.  Instead you should either L</"delete_contexts()">,
 L</"delete_type()"> or L</"delete_index()"> before reindexing.
 
@@ -623,42 +723,39 @@ sub index_phrases {
         || $params->{filename} && $self->_load_phrases( $params->{filename} )
         || $self->aggregate_phrases($params);
 
-    my $verbose = $params->{verbose};
-
     my $i = 0;
     my @recs;
     my $index = $self->index;
     my $type  = $self->type;
 
-    print "Indexing " . ( scalar @$phrases ) . " phrases\n"
-        if $verbose;
+    $self->_debug( 1, "Indexing " . ( scalar @$phrases ) . " phrases" );
 
     my $es = $self->es;
     for my $entry (@$phrases) {
-        my ( $words, $contexts ) = @{$entry}{ 'words', 'contexts' };
+        my ( $tokens, $label, $contexts )
+            = @{$entry}{qw(tokens label contexts)};
         for my $context ( keys %$contexts ) {
             push @recs,
                 {
                 index => $index,
                 type  => $type,
                 data  => {
-                    words   => $words,
+                    tokens  => $tokens,
+                    label   => $label,
                     context => $context,
                     freq    => $contexts->{$context}
                 }
                 };
             if ( ++$i % 1000 == 0 ) {
                 $es->bulk_index( \@recs );
-                print "$i\n"
-                    if $verbose;
+                $self->_debug( 1, " - $i" );
                 @recs = ();
             }
         }
     }
     if (@recs) {
         $es->bulk_index( \@recs );
-        print "$i\n"
-            if $verbose;
+        $self->_debug( 1, " - $i" );
     }
 
 }
@@ -672,8 +769,7 @@ sub index_phrases {
 
         # optional
         min_freq    => 1,
-        max_words   => 10,
-        verbose     => 0 | 1,
+        max_tokens   => 10,
     );
 
 C<aggregate_phrases()> is used to build the list of phrases and their
@@ -692,17 +788,17 @@ L<ElasticSearch/"search()">.  For instance:
 See L<http://www.elasticsearch.org/guide/reference/query-dsl/> for more.
 
 C<parser> should be a sub reference which processes each document from
-ElasticSearch and returns the relevant words and contexts, for instance:
+ElasticSearch and returns the relevant tokens and contexts, for instance:
 
     parser => sub {
         my $auto   = shift;  # the auto completer instance
         my $doc    = shift;  # the doc from elasticsearch
         my $source = $doc->{_source};
 
-        my @words    = $auto->tokenize($source->{name});
+        my @tokens    = $auto->tokenize($source->{name});
         my @contexts = @{$source->{tags}};
         return {
-            words    => \@words,
+            tokens    => \@tokens,
             contexts => \@contexts
         }
     }
@@ -710,18 +806,15 @@ ElasticSearch and returns the relevant words and contexts, for instance:
 If no C<@contexts> are returned, then a default context of C<''> will be
 used instead.
 
-The standard L</"tokenizer()"> breaks up words on anything
+The standard L</"tokenizer()"> breaks up tokens on anything
 that isn't a letter or an apostrophe, and lowercases all terms. You
 can override this.
 
 You can choose to not index any C<phrase/context> combinations that have a
 frequency less than C<min_freq>.
 
-The maximum number of terms in C<@words> can be controlled with C<max_words>
+The maximum number of terms in C<@tokens> can be controlled with C<max_tokens>
 (default C<10>).
-
-C<< verbose => 1 >> will cause C<aggregate_phrases()> to print out some progress
-information.
 
 =cut
 
@@ -731,20 +824,19 @@ sub aggregate_phrases {
     my $self = shift;
     my $params = ref $_[0] ? shift : {@_};
 
+    my $parser = $params->{parser}
+        || croak "No parser callback passed to aggregate()";
+
     my $query = $params->{query}
         || croak "No query passed to aggregate()";
 
     croak "The query cannot include a sort parameter"
         if $query->{sort};
 
-    my $parser = $params->{parser}
-        || croak "No parser callback passed to aggregate()";
+    my $max = $params->{max} || 1000;
+    my $min_freq = $params->{min_freq};
 
-    my $max       = $params->{max} || 1000;
-    my $es        = $self->es;
-    my $verbose   = $params->{verbose};
-    my $min_freq  = $params->{min_freq} || 1;
-    my $max_words = ( $params->{max_words} || 10 ) - 1;
+    my $es = $self->es;
 
     my %phrases;
     my $start = 0;
@@ -757,47 +849,95 @@ sub aggregate_phrases {
         scroll => '5m'
     );
 
-    print "Aggregating $r->{hits}{total} records\n"
-        if $verbose;
+    $self->_debug( 1, "Aggregating $r->{hits}{total} records" );
 
     my $total = 0;
+
     while (1) {
         my $hits = $r->{hits}{hits};
         last unless @$hits;
 
         for my $doc (@$hits) {
-            my $vals = $parser->( $self, $doc );
-            my @words = @{ $vals->{words} || [] };
-            $#words = $max_words if @words >= $max_words;
-            my $id = join "\t", sort grep { defined && length } @words;
-            next unless length $id;
-
-            my @contexts = @{ $vals->{contexts} || [] };
-            @contexts = '' unless @contexts;
-            $phrases{$id}{words} ||= \@words;
-            $phrases{$id}{contexts}{$_}++ for @contexts;
+            my @vals = $parser->( $self, $doc );
+            $self->_add_doc( \%phrases, $_ ) for @vals;
         }
 
         $total += @$hits;
-        print "$total\n"
-            if $verbose;
+        $self->_debug( 1, " - $total" );
 
         $r = $es->scroll( scroll_id => $r->{_scroll_id}, scroll => '5m' );
     }
 
-    if ( $min_freq > 1 ) {
-        for my $id ( keys %phrases ) {
-            my $contexts = $phrases{$id}{contexts};
-            for my $context ( keys %$contexts ) {
-                delete $contexts->{$context}
-                    if $contexts->{$context} < $min_freq;
-            }
-            delete $phrases{$id}
-                unless %$contexts;
-        }
-    }
+    $self->_check_min_freq( $min_freq, \%phrases );
 
     return [ values %phrases ];
+}
+
+=head2 filter_tokens()
+
+=cut
+
+#===================================
+sub filter_tokens {
+#===================================
+    my $self       = shift;
+    my $min_length = $self->min_length;
+    my $stop_words = $self->stop_words;
+    my $max_tokens = $self->max_tokens;
+    my @tokens     = grep {
+                defined $_
+            and length $_ >= $min_length
+            and !$stop_words->{$_}
+    } @_;
+    $#tokens = $max_tokens - 1
+        if @tokens >= $max_tokens;
+    return @tokens;
+}
+
+#===================================
+sub _add_doc {
+#===================================
+    my $self    = shift;
+    my $phrases = shift;
+    my $vals    = shift;
+
+    my @tokens
+        = $vals->{tokens}
+        ? @{ $vals->{tokens} }
+        : $self->tokenize( $vals->{phrase} );
+
+    @tokens = $self->filter_tokens(@tokens);
+    return unless @tokens;
+
+    my $id = $vals->{id} || join "\t", sort @tokens;
+    $phrases->{$id}{tokens} ||= \@tokens;
+
+    my @contexts = @{ $vals->{contexts} || [] };
+    @contexts = '' unless @contexts;
+    $phrases->{$id}{contexts}{$_}++ for @contexts;
+
+    my $label = $vals->{label};
+    $phrases->{$id}{label} ||= $label
+        if defined $label && length $label;
+}
+
+#===================================
+sub _check_min_freq {
+#===================================
+    my $self = shift;
+    my $min = shift || 1;
+    return unless $min > 1;
+    my $phrases = shift;
+    for my $id ( keys %$phrases ) {
+        my $contexts = $phrases->{$id}{contexts};
+        for my $context ( keys %$contexts ) {
+            delete $contexts->{$context}
+                if $contexts->{$context} < $min;
+        }
+        delete $phrases->{$id}
+            unless %$contexts;
+    }
+
 }
 
 =head2 save_phrases()
@@ -810,8 +950,7 @@ sub aggregate_phrases {
 
         # optional
         min_freq    => 1,
-        max_words   => 10,
-        verbose     => 0 | 1,
+        max_tokens   => 10,
 
     )
 
@@ -956,6 +1095,7 @@ sub optimize_index {
     my $es = $self->es;
     $es->optimize_index( index => $self->index, max_num_segments => 1 );
     $es->update_index_settings(
+        index => $self->index,
 
         # set divisor
         # settings => { auto_expand_replicas=> '0-all'}
@@ -985,12 +1125,12 @@ sub create_type {
         index      => $self->index,
         type       => $self->type,
         _all       => { enabled => 0 },
-        _source    => { enabled => 0 },
+        _source    => { enabled => 0, compress => 1 },
         properties => {
-            words => {
+            tokens => {
                 type   => 'multi_field',
                 fields => {
-                    words => {
+                    tokens => {
                         type     => 'string',
                         analyzer => $ascii . 'std',
                         store    => 'yes'
@@ -1000,6 +1140,11 @@ sub create_type {
                         analyzer => $ascii . 'edge_ngram'
                     },
                 }
+            },
+            label => {
+                type  => 'string',
+                index => 'no',
+                store => 'yes'
             },
             freq    => { type => 'integer', store => 'yes' },
             context => { type => 'string',  index => 'not_analyzed' },
@@ -1070,6 +1215,151 @@ sub delete_contexts {
     }
 }
 
+=head2 tokenize()
+
+    @tokens = $auto->tokenize('$phrase');
+
+Returns a list of tokens as tokenized by L</"tokenizer()">. By default
+it lowercases the phrase, and splits it into tokens on anything which isn't
+a letter or an apostrophe. Only unique tokens are returned.
+
+=head1 PROPERTIES
+
+=head2 tokenizer()
+
+    $tokenizer = $auto->tokenizer( sub { } )
+
+Getter/setter for the tokenizer used by C<ElasticSearchX::Autocomplete>. The
+C<tokenizer> is used by L</"aggregate_phrases()"> and by L</"suggest()">.
+
+The value should be a sub ref, eg, the default implementation:
+
+    $auto->tokenizer(
+        my $str = shift;
+        my %seen;
+        my @tokens;
+        for my $token ( grep {$_} split /(?:[^\w']|\d)+/, lc $str ) {
+            push @tokens, $token
+                unless $seen{$token}++;
+        }
+        return @tokens;
+    )
+
+=cut
+
+#===================================
+sub tokenize { $_[0]->{_tokenizer}->( $_[1] ) }
+#===================================
+
+#===================================
+sub _tokenize {
+#===================================
+    my $str = shift;
+    return unless defined $str && length $str;
+
+    my %seen;
+
+    utf8::upgrade($str);
+    $str = lc NFC $str;
+
+    return grep { !$seen{$_}++ } grep {length} split /\W+/, $str;
+}
+
+#===================================
+sub _cache_key {
+#===================================
+    my $self    = shift;
+    my $context = shift;
+    my $tokens  = shift;
+    my $key     = $JSON->encode( [
+            $self->index, $self->type, $self->{max_results}, $context, $tokens
+        ]
+    );
+    $key =~ tr/ /_/;
+    return $key;
+}
+
+#===================================
+sub _debug {
+#===================================
+    return unless $_[0]->{_debug} >= $_[1];
+    shift;
+    shift;
+    print STDERR join( "",
+        map { ref $_ eq 'ARRAY' ? '[' . join( ', ', @$_ ) . ']' : $_ } @_ )
+        . "\n";
+}
+
+=head2 stop_words()
+
+=cut
+
+#===================================
+sub stop_words {
+#===================================
+    my $self = shift;
+    if (@_) {
+        my @tokens = ref $_[0] ? @{ $_[0] } : @_;
+        $self->{_stop_words} = { map { lc($_) => 1 } @tokens };
+    }
+    return $self->{_stop_words} || {};
+}
+
+=head2 ascii_folding()
+
+    $bool = $auto->ascii_folding($bool)
+
+If true (the default), all phrases will be ascii-folded, ie phrases with
+accents will be treated as though they don't have accents, eg:
+
+    "maria" == "maría"
+
+This should be set before the type is created (with L</"create_type()">).
+
+=head2 max_results()
+
+    $max = $auto->max_results($max)
+
+The maximum number of suggestions that will be returned by L</"suggest()">,
+defaults to 10.
+
+=head2 max_tokens()
+
+    $max = $auto->max_tokens($max)
+
+The maximum number of tokens/terms (default 10) that will be returned for each
+phrase in L</"aggregate_phrases()">.
+
+For instance, if the phrase C<"The quick brown fox jumped over the lazy dog">
+with < C<max_tokens> value of 5 would return C<"brown dog fox jumped lazy">.
+
+=head2 match_boost()
+
+    $boost = $auto->match_boost($boost)
+
+A token that matches a whole token is "boosted" (ie ranked more highly) than
+a token that only partially matches.
+
+For instance: C<"jon"> would rank C<"jon"> more highly than C<"jonathon">.
+
+However, the frequency/count for the phrase is also factored into the ranking.
+
+How much a whole-token match counts can be tuned with C<match_boost()> where
+a value of C<0> would stop it counting at all.  The default is C<1>.
+
+=cut
+
+#===================================
+sub ascii_folding { _accessor( 'ascii_folding', @_ ) }
+sub max_results   { _accessor( 'max_results',   @_ ) || 10 }
+sub min_length    { _accessor( 'min_length',    @_ ) || 1 }
+sub max_tokens    { _accessor( 'max_tokens',    @_ ) || 10 }
+sub match_boost   { _accessor( 'match_boost',   @_ ) || 1 }
+sub tokenizer     { _accessor( 'tokenizer',     @_ ) }
+sub cache         { _accessor( 'cache',         @_ ) }
+sub debug         { _accessor( 'debug',         @_ ) || 0 }
+#===================================
+
 =head2 es()
 
     $es_instance = $auto->es($es_instance);
@@ -1097,107 +1387,6 @@ eg C<name>, C<city>, C<language> etc
 sub es { _accessor( 'es', @_ ) || croak "No ElasticSearch instance set" }
 sub index { _accessor( 'index', @_ ) || croak "No index has been set" }
 sub type  { _accessor( 'type',  @_ ) || croak "No index has been set" }
-#===================================
-
-=head2 tokenize()
-
-    @words = $auto->tokenize('$phrase');
-
-Returns a list of words as tokenized by L</"tokenizer()">. By default
-it lowercases the phrase, and splits it into words on anything which isn't
-a letter or an apostrophe. Only unique words are returned.
-
-=head1 PROPERTIES
-
-=head2 tokenizer()
-
-    $tokenizer = $auto->tokenizer( sub { } )
-
-Getter/setter for the tokenizer used by C<ElasticSearchX::Autocomplete>. The
-C<tokenizer> is used by L</"aggregate_phrases()"> and by L</"suggest()">.
-
-The value should be a sub ref, eg, the default implementation:
-
-    $auto->tokenizer(
-        my $str = shift;
-        my %seen;
-        my @words;
-        for my $word ( grep {$_} split /(?:[^\w']|\d)+/, lc $str ) {
-            push @words, $word
-                unless $seen{$word}++;
-        }
-        return @words;
-    )
-
-=cut
-
-#===================================
-sub tokenize { shift->{_tokenizer}->(shift) }
-#===================================
-
-#===================================
-sub _tokenize {
-#===================================
-    my $str = shift;
-    my %seen;
-    my @words;
-    for my $word ( grep {$_} split /(?:[^\w']|\d)+/, lc $str ) {
-        push @words, $word
-            unless $seen{$word}++;
-    }
-    return @words;
-}
-
-=head2 ascii_folding()
-
-    $bool = $auto->ascii_folding($bool)
-
-If true (the default), all phrases will be ascii-folded, ie phrases with
-accents will be treated as though they don't have accents, eg:
-
-    "maria" == "maría"
-
-This should be set before the type is created (with L</"create_type()">).
-
-=head2 max_results()
-
-    $max = $auto->max_results($max)
-
-The maximum number of suggestions that will be returned by L</"suggest()">,
-defaults to 10.
-
-=head2 max_words()
-
-    $max = $auto->max_words($max)
-
-The maximum number of words/terms (default 10) that will be returned for each
-phrase in L</"aggregate_phrases()">.
-
-For instance, if the phrase C<"The quick brown fox jumped over the lazy dog">
-with < C<max_words> value of 5 would return C<"brown dog fox jumped lazy">.
-
-=head2 match_boost()
-
-    $boost = $auto->match_boost($boost)
-
-A word that matches a whole word is "boosted" (ie ranked more highly) than
-a word that only partially matches.
-
-For instance: C<"jon"> would rank C<"jon"> more highly than C<"jonathon">.
-
-However, the frequency/count for the phrase is also factored into the ranking.
-
-How much a whole-word match counts can be tuned with C<match_boost()> where
-a value of C<0> would stop it counting at all.  The default is C<1>.
-
-=cut
-
-#===================================
-sub ascii_folding { _accessor( 'ascii_folding', @_ ) }
-sub max_results   { _accessor( 'max_results',   @_ ) || 10 }
-sub max_words     { _accessor( 'max_words',     @_ ) || 10 }
-sub match_boost   { _accessor( 'match_boost',   @_ ) || 1 }
-sub tokenizer     { _accessor( 'tokenizer',     @_ ) }
 #===================================
 
 #===================================
