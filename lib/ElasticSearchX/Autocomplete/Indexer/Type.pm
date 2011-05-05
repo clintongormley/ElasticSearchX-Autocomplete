@@ -65,7 +65,7 @@ sub index_phrases {
     }
 
     $self->_bulk_index( \@recs, $i );
-    $self->refresh_index( index => $index )
+    $self->es->refresh_index( index => $index )
         unless $params->{no_refresh};
 }
 
