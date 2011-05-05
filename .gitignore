@@ -1,3 +1,10 @@
 .includepath
 .project
+MANIFEST.SKIP.bak
+MANIFEST.bak
+_build/
+blib/
+Build
+MYMETA.yml
+
 
