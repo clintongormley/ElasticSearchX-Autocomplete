@@ -44,24 +44,28 @@ sub index_phrases {
     $self->_debug( 3, " - Indexing " . ( scalar @$phrases ) . " phrases" );
 
     for my $entry (@$phrases) {
-        my $rank = delete $entry->{rank};
-        my %cleaned = map { $clean->($_) => $rank->{$_} } keys %$rank;
+        my $ranks = delete $entry->{rank};
         for ( keys %$entry ) {
             delete $entry->{$_} unless defined $entry->{$_};
         }
+        for my $context ( keys %$ranks ) {
+            my $rank = $ranks->{$context};
+            $context = $clean->($context);
 
-        push @recs,
-            {
-            index => $index,
-            type  => $type_name,
-            id    => delete $entry->{doc_id},
-            data  => {
-                rank => \%cleaned,
-                %$entry,
-            }
-            };
-        $self->_bulk_index( \@recs, $i )
-            if ++$i % 5000 == 0;
+            push @recs,
+                {
+                index => $index,
+                type  => $type_name,
+                id    => delete $entry->{doc_id},
+                data  => {
+                    rank    => $rank,
+                    context => $context,
+                    %$entry,
+                }
+                };
+            $self->_bulk_index( \@recs, $i )
+                if ++$i % 5000 == 0;
+        }
     }
 
     $self->_bulk_index( \@recs, $i );
@@ -231,20 +235,10 @@ sub type_defn {
     my $type  = $self->type;
     my $ascii = $type->ascii_folding ? 'ascii_' : '';
     return {
-        index             => $self->index,
-        type              => $type->name,
-        _all              => { enabled => 0 },
-        _source           => { enabled => 1, compress => 1 },
-        dynamic_templates => [ {
-                rank => {
-                    path_match => 'rank.*',
-                    mapping    => {
-                        store => 'yes',
-                        type  => 'integer'
-                    }
-                }
-            }
-        ],
+        index      => $self->index,
+        type       => $type->name,
+        _all       => { enabled => 0 },
+        _source    => { compress => 1 },
         properties => {
             tokens => {
                 type   => 'multi_field',
@@ -252,7 +246,6 @@ sub type_defn {
                     tokens => {
                         type     => 'string',
                         analyzer => $ascii . 'std',
-                        store    => 'yes'
                     },
                     ngram => {
                         type            => 'string',
@@ -261,13 +254,10 @@ sub type_defn {
                     },
                 }
             },
-            label => {
-                type  => 'string',
-                index => 'not_analyzed',
-                store => 'yes'
-            },
-            rank     => { type => 'object',    store => 'no' },
-            location => { type => 'geo_point', store => 'yes' },
+            label    => { type => 'string', index => 'not_analyzed' },
+            rank     => { type => 'integer' },
+            location => { type => 'geo_point' },
+            context  => { type => 'string', index => 'not_analyzed' },
             %{ $type->custom_fields },
         }
     };

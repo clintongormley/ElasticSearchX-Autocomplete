@@ -7,7 +7,8 @@ use Carp;
 use Text::Unidecode;
 use Unicode::Normalize;
 use List::MoreUtils qw(uniq);
-use ElasticSearchX::Autocomplete::Util qw(_create_accessors _params _debug _try_cache cache_key );
+use ElasticSearchX::Autocomplete::Util
+    qw(_create_accessors _params _debug _try_cache cache_key );
 
 __PACKAGE__->_create_accessors(
     ['cache'],
@@ -96,7 +97,7 @@ sub _search_params {
     $search_params{tokens} = \@tokens
         if @tokens;
 
-    for (qw(location fields loose)) {
+    for (qw(location loose)) {
         $search_params{$_} = $params->{$_}
             if $params->{$_};
     }
@@ -153,10 +154,10 @@ sub label_builder {
 
     return sub {
         my $doc   = shift;
-        my $label = $doc->{fields}{label};
+        my $label = $doc->{_source}{label};
         return $label if $label;
 
-        my $result     = $doc->{fields}{tokens};
+        my $result     = $doc->{_source}{tokens};
         my @candidates = ref $result ? @$result : $result;
         my %unused     = $canonicalize->(@candidates);
         my @new_tokens;
@@ -185,9 +186,7 @@ sub _retrieve_suggestions {
     my $self   = shift;
     my $params = shift;
 
-    my @tokens  = @{ $params->{tokens} };
-    my $context = $params->{context};
-
+    my @tokens = @{ $params->{tokens} };
     my $qs = join ' ', @tokens;
 
     my $ngrams
@@ -209,7 +208,7 @@ sub _retrieve_suggestions {
     };
 
     my @filters = (
-        { exists => { field => "rank.$context" } },
+        { term => { context => $params->{context} } },
         @{ $self->suggestion_filters }
     );
     my $filter = @filters > 1 ? { and => \@filters } : $filters[0];
@@ -223,11 +222,9 @@ sub _retrieve_suggestions {
                         query  => $token_query,
                     }
                 },
-                script => "_score * 2 +  doc['rank.$context'].value",
+                script => "_score * 2 +  doc['rank'].value",
             },
-        },
-        script_fields =>
-            { rank => { script => "doc['rank.$context'].value" } },
+        }
     };
     return $self->_location_clause( $params, $search );
 
@@ -261,13 +258,11 @@ SCRIPT
 
     $clause->{params} = $loc;
 
-    my $context = $params->{context};
     $search->{script_fields} = {
         distance => {
             script => "floor(doc['location'].distanceInKm(lat,lon))",
             params => $loc
-        },
-        rank => { script => "doc['rank.$context'].value" }
+        }
     };
 
     return $search;
@@ -280,10 +275,9 @@ sub _retrieve_popular {
     my $self    = shift;
     my $params  = shift;
     my $context = $params->{context};
-    my $rank    = "rank.$context";
 
-    my @filters
-        = ( { exists => { field => $rank } }, @{ $self->popular_filters } );
+    my @filters = ( { term => { context => $context } },
+        @{ $self->popular_filters } );
 
     if ( my $loc = $params->{location} ) {
         my $radius = $loc->{radius} || 500;
@@ -300,8 +294,7 @@ sub _retrieve_popular {
 
     return {
         query => { constant_score => { filter => $filter } },
-        script_fields => { rank => { script => "doc['$rank'].value" } },
-        sort => [ { $rank => 'desc' }, { label => 'asc' } ],
+        sort => [ { rank => 'desc' }, { label => 'asc' } ],
     };
 
 }
@@ -313,18 +306,12 @@ sub _context_search {
     my $params = shift;
     my $search = shift;
 
-    my @fields = ( 'tokens', 'rank', 'label', 'location', 'distance' );
-    if ( my $extra = $params->{fields} ) {
-        @fields = uniq( @fields, @$extra );
-    }
-
     my $results;
     eval {
         $results = $self->es->search(
             preference => '_local',
             explain    => 0,
             %$search,
-            fields => \@fields,
             ( map { $_ => $params->{$_} } qw(index type size) ),
         );
 
@@ -371,7 +358,7 @@ sub _tokenize {
 }
 
 #===================================
-sub clean_context { _clean_context($_[1])}
+sub clean_context { _clean_context( $_[1] ) }
 #===================================
 
 #===================================
