@@ -1,5 +1,11 @@
 Revision history for ElasticSearchX-Autocomplete
 
+0.03    2011-05-09
+        Changed the structure of the docs to store one doc per context,
+        instead of listing each context inside a rank object
+
+        If UNDEF is returned from the cache, don't treat as not-found.
+
 0.02    2011-05-05
         Fixed a syntax error in index_phrases
 

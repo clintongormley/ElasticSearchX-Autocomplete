@@ -2,6 +2,8 @@ use strict;
 use warnings;
 use Test::More;
 
+plan skip_all => 'Docs not written yet';
+
 # Ensure a recent version of Test::Pod::Coverage
 my $min_tpc = 1.08;
 eval "use Test::Pod::Coverage $min_tpc";

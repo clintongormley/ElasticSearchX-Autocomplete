@@ -3,7 +3,7 @@ NAME
     frequency and geolocation
 
 VERSION
-    Version 0.01 - alpha
+    Version 0.03 - alpha
 
 DESCRIPTION
     "ElasticSearchX::Autocomplete" helps you to build autocomplete indexes
