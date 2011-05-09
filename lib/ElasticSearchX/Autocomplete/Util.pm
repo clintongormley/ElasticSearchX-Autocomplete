@@ -66,9 +66,13 @@ sub _try_cache {
         $cache_key = $self->cache_key($params);
         $self->_debug( 1, "Retrieve from cache: ", $cache_key );
         $json = $cache->($cache_key);
-        if ( $json && $json ne 'UNDEF' ) {
-            $self->_debug( 1, " - Found in cache" );
-            return $as_json ? $json : $JSON->decode($json);
+        if ($json) {
+            if ( $json ne 'UNDEF' ) {
+                $self->_debug( 1, " - Found in cache" );
+                return $as_json ? $json : $JSON->decode($json);
+            }
+            $self->_debug( 1, " - Found UNDEF in cache" );
+            return undef;
         }
 
         $self->_debug( 1, " - Not found in cache" );
