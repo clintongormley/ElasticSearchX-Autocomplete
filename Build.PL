@@ -14,8 +14,11 @@ my $builder = Module::Build->new(
     add_to_cleanup     => ['ElasticSearchX-*'],
     create_makefile_pl => 'traditional',
     requires           => {
-        'ElasticSearch' => '0.37',
-        'JSON'          => 0,
+        'ElasticSearch'      => '0.37',
+        'JSON'               => 0,
+        'Text::Unidecode'    => 0,
+        'Unicode::Normalize' => 0,
+        'List::MoreUtils'    => 0,
     },
     recommends => { 'JSON::XS' => 0, },
     meta_merge => {
