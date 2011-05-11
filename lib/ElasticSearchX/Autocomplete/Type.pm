@@ -214,6 +214,7 @@ sub _retrieve_suggestions {
     my $filter = @filters > 1 ? { and => \@filters } : $filters[0];
 
     my $search = {
+        fields => ['_source'],
         query => {
             custom_score => {
                 query => {
@@ -293,6 +294,7 @@ sub _retrieve_popular {
     my $filter = @filters > 1 ? { and => \@filters } : $filters[0];
 
     return {
+        fields => ['_source'],
         query => { constant_score => { filter => $filter } },
         sort => [ { rank => 'desc' }, { label => 'asc' } ],
     };
