@@ -7,8 +7,11 @@ WriteMakefile
   'PREREQ_PM' => {
                    'ElasticSearch' => '0.37',
                    'JSON' => 0,
+                   'List::MoreUtils' => 0,
                    'Test::Exception' => 0,
-                   'Test::More' => 0
+                   'Test::More' => 0,
+                   'Text::Unidecode' => 0,
+                   'Unicode::Normalize' => 0
                  },
   'INSTALLDIRS' => 'site',
   'EXE_FILES' => [],

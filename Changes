@@ -1,4 +1,7 @@
 Revision history for ElasticSearchX-Autocomplete
+0.03    2011-05-11
+        Added some missing dependencies
+        Fixed a bug when doing a location based search
 
 0.03    2011-05-09
         Changed the structure of the docs to store one doc per context,
