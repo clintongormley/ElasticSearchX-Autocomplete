@@ -131,6 +131,7 @@ sub type {
         es    => $self->es,
         debug => $self->debug,
         type  => $type,
+        JSON => $self->JSON,
         index => $self->init
     );
 }
