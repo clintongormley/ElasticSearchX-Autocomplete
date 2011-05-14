@@ -16,7 +16,7 @@ name: ElasticSearchX-Autocomplete
 provides:
   ElasticSearchX::Autocomplete:
     file: lib/ElasticSearchX/Autocomplete.pm
-    version: 0.04
+    version: 0.05
   ElasticSearchX::Autocomplete::Indexer:
     file: lib/ElasticSearchX/Autocomplete/Indexer.pm
   ElasticSearchX::Autocomplete::Indexer::Type:
@@ -37,4 +37,4 @@ resources:
   bugtracker: https://github.com/clintongormley/ElasticSearchX-Autocomplete/issues
   license: http://dev.perl.org/licenses/
   repository: https://github.com/clintongormley/ElasticSearchX-Autocomplete/
-version: 0.04
+version: 0.05

@@ -10,7 +10,7 @@ use ElasticSearchX::Autocomplete::Type();
 use JSON();
 
 our $JSON    = JSON->new()->utf8(1);
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 __PACKAGE__->_create_accessors(
     ['cache'],
@@ -82,7 +82,7 @@ and geolocation
 
 =head1 VERSION
 
-Version 0.04 - alpha
+Version 0.05 - alpha
 
 =head1 DESCRIPTION
 
