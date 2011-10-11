@@ -15,6 +15,7 @@ __PACKAGE__->_create_accessors(
     ['debug'],
     ['JSON'],
     ['tokenizer'],
+    ['formatter'],
     ['ascii_folding'],
     [ 'max_results',        10 ],
     [ 'min_length',         1 ],
@@ -36,7 +37,8 @@ sub new {
 
     my $self = {
         _ascii_folding => 1,
-        _tokenizer     => \&_tokenize,
+        _tokenizer     => $class->can('_tokenize'),
+        _formatter     => $class->can('_format'),
         _debug         => 0
     };
 
@@ -121,7 +123,11 @@ sub _suggestions {
 }
 
 #===================================
-sub format_suggestions {
+sub format_suggestions { $_[0]->{_formatter}->(@_) }
+#===================================
+
+#===================================
+sub _format {
 #===================================
     my $self    = shift;
     my $params  = shift;
