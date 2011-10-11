@@ -104,12 +104,12 @@ sub _create_accessors {
     my $class = shift;
     for (@_) {
         my ( $name, $default ) = @$_;
-        $default = $default ? ' || ' . $default : '';
+        $default ||= 0;
         eval <<SUB or croak $@;
             sub ${class}::${name} {
                 my \$self = shift;
                 if (\@_) { \$self->{_$name} = shift() }
-                return \$self->{_$name} $default;
+                return defined \$self->{_$name} ? \$self->{_$name} : $default;
             }
             1;
 SUB
