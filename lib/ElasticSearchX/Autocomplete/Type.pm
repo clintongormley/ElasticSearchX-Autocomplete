@@ -253,9 +253,9 @@ sub _location_clause {
 
     my $radius = $loc->{radius} || 1000;
     my $exp    = $loc->{exp}    || 2;
-    my $steps  = $loc->{steps}  || 4;
-    my $boost  = $loc->{boost}  || 5;
-    my $step   = $boost / $steps;
+    my $steps  = $loc->{steps}  || 3;
+    my $boost  = $loc->{boost}  || 2;
+    my $step   = ( $boost - 1 ) / $steps;
 
     my @filters;
     for ( reverse 0 .. $steps - 1 ) {
