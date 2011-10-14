@@ -1,4 +1,8 @@
 Revision history for ElasticSearchX-Autocomplete
+0.06    2011-10-14
+        Added support for a 'formatter' callback, to format results
+        Added support for multiple tokens, eg "London", "London, England"
+        Requires ElasticSearch version 0.17 and above
 
 0.05    2011-05-14
         ElasticSearchX::Autocomplete::Indexer::Type was not being passed the

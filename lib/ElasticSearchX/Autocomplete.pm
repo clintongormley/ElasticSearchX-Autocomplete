@@ -4,13 +4,13 @@ use strict;
 use warnings;
 use Carp;
 
-use ElasticSearch 0.37;
+our $VERSION = '0.06';
+use ElasticSearch 0.46;
 use ElasticSearchX::Autocomplete::Util qw(_create_accessors _params );
 use ElasticSearchX::Autocomplete::Type();
 use JSON();
 
 our $JSON    = JSON->new()->utf8(1);
-our $VERSION = '0.05';
 
 __PACKAGE__->_create_accessors(
     ['cache'],
@@ -75,14 +75,7 @@ sub indexer {
     );
 }
 
-=head1 NAME
-
-ElasticSearchX::Autocomplete - Efficient autocomplete with term frequency
-and geolocation
-
-=head1 VERSION
-
-Version 0.05 - alpha
+# ABSTRACT: Efficient autocomplete with term frequency and geolocation
 
 =head1 DESCRIPTION
 

@@ -6,5 +6,6 @@ _build/
 blib/
 Build
 MYMETA.yml
+ElasticSearchX-Autocomplete*
 
 
