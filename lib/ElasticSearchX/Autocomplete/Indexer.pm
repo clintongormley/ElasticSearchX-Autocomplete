@@ -60,8 +60,9 @@ sub _reopen {
 #===================================
     my $self  = shift;
     my $alias = $self->alias;
-    my $index = $self->es->get_aliases->{aliases}{$alias}[0]
-        or croak "Cannot edit existing index - Alias '$alias' doesn't exist";
+    my ($index) = keys %{ $self->es->get_aliases( index => $alias ) };
+    croak "Cannot edit existing index - Alias '$alias' doesn't exist"
+        unless $index;
     $self->cleanup(0);
     $self->index($index);
 }
@@ -98,7 +99,7 @@ sub deploy {
     }
 
     my $alias = $self->alias;
-    my $old = $es->get_aliases( index => $alias )->{aliases}{$alias}[0];
+    my ($old) = keys %{ $es->get_aliases( index => $alias ) };
     if ( !$old or $old ne $index ) {
         my @actions = { add => { index => $index, alias => $alias } };
 
@@ -131,7 +132,7 @@ sub type {
         es    => $self->es,
         debug => $self->debug,
         type  => $type,
-        JSON => $self->JSON,
+        JSON  => $self->JSON,
         index => $self->init
     );
 }
@@ -208,7 +209,6 @@ sub DESTROY {
         $self->es->delete_index( index => $index );
     }
 }
-
 
 =head1 NAME
 

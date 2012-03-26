@@ -4,13 +4,13 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.06';
-use ElasticSearch 0.46;
+our $VERSION = '0.07';
+use ElasticSearch 0.52;
 use ElasticSearchX::Autocomplete::Util qw(_create_accessors _params );
 use ElasticSearchX::Autocomplete::Type();
 use JSON();
 
-our $JSON    = JSON->new()->utf8(1);
+our $JSON = JSON->new()->utf8(1);
 
 __PACKAGE__->_create_accessors(
     ['cache'],
